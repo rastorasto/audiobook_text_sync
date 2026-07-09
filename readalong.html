@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Read-Along Player</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background:#111; color:#eee; font-family:-apple-system,sans-serif;
+    display:flex; height:100vh; margin:0;
+  }
+  #sidebar {
+    width:280px; background:#1a1a1a; overflow-y:auto; padding:1rem;
+    border-right:1px solid #333; flex-shrink:0;
+  }
+  #sidebar h2 { font-size:0.9rem; color:#888; margin:0 0 1rem; }
+  .chapter {
+    padding:0.6rem 0.8rem; border-radius:6px; cursor:pointer; font-size:0.9rem;
+    color:#ccc; margin-bottom:0.2rem;
+  }
+  .chapter:hover { background:#252525; }
+  .chapter.playing { background:#2d5a3d; color:#4ade80; font-weight:600; }
+  .chapter .missing { color:#e66; font-size:0.75rem; }
+  #main {
+    flex:1; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; padding:2rem; overflow-y:auto;
+  }
+  #picker { margin-bottom:1rem; }
+  #caption { font-size:1.8rem; max-width:700px; text-align:center; min-height:3.5em; line-height:1.4; }
+  #caption .active { color:#4ade80; font-weight:600; }
+  #controls { display:flex; align-items:center; gap:1rem; margin-top:1rem; width:100%; max-width:700px; }
+  audio { flex:1; }
+  button {
+    background:#2d5a3d; color:#eee; border:none; border-radius:6px;
+    padding:0.5rem 1rem; cursor:pointer; font-size:0.9rem;
+  }
+  button:hover { background:#37704a; }
+  button:disabled { background:#333; color:#666; cursor:not-allowed; }
+  #nowplaying { font-size:0.85rem; color:#888; margin-bottom:0.5rem; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>CHAPTERS</h2>
+  <div id="picker">
+    <input type="file" id="folderInput" webkitdirectory directory multiple>
+  </div>
+  <div id="chapterList"></div>
+</div>
+
+<div id="main">
+  <div id="nowplaying"></div>
+  <div id="caption">Pick a folder to begin</div>
+  <div id="controls">
+    <button id="prevBtn" disabled>⏮ Prev</button>
+    <audio id="player" controls></audio>
+    <button id="nextBtn" disabled>Next ⏭</button>
+  </div>
+</div>
+
+<script>
+let chapters = [];   // [{ name, audioFile, vttFile }]
+let current = -1;
+let cues = [];
+
+function baseName(filename) {
+  return filename.replace(/\.[^/.]+$/, "");
+}
+
+document.getElementById("folderInput").addEventListener("change", e => {
+  const files = Array.from(e.target.files);
+  const audioExts = [".mp3", ".m4a", ".m4b", ".flac", ".ogg", ".wav"];
+
+  const audioFiles = files.filter(f => audioExts.some(ext => f.name.toLowerCase().endsWith(ext)));
+  const vttFiles = files.filter(f => f.name.toLowerCase().endsWith(".vtt"));
+
+  audioFiles.sort((a, b) => a.webkitRelativePath.localeCompare(b.webkitRelativePath));
+
+  chapters = audioFiles.map(audioFile => {
+    const base = baseName(audioFile.name);
+    const vttFile = vttFiles.find(v => baseName(v.name) === base) || null;
+    return { name: audioFile.name, audioFile, vttFile };
+  });
+
+  renderChapterList();
+  if (chapters.length > 0) loadChapter(0);
+});
+
+function renderChapterList() {
+  const listEl = document.getElementById("chapterList");
+  listEl.innerHTML = "";
+  chapters.forEach((ch, i) => {
+    const div = document.createElement("div");
+    div.className = "chapter" + (i === current ? " playing" : "");
+    div.innerHTML = ch.name + (ch.vttFile ? "" : ' <span class="missing">(no vtt)</span>');
+    div.addEventListener("click", () => loadChapter(i));
+    listEl.appendChild(div);
+  });
+}
+
+function loadChapter(i) {
+  current = i;
+  const ch = chapters[i];
+  const player = document.getElementById("player");
+  player.src = URL.createObjectURL(ch.audioFile);
+  player.play();
+
+  document.getElementById("nowplaying").textContent = ch.name;
+  document.getElementById("prevBtn").disabled = i === 0;
+  document.getElementById("nextBtn").disabled = i === chapters.length - 1;
+
+  if (ch.vttFile) {
+    const reader = new FileReader();
+    reader.onload = () => { cues = parseVTT(reader.result); renderCaption(); };
+    reader.readAsText(ch.vttFile);
+  } else {
+    cues = [];
+    document.getElementById("caption").textContent = "(no captions for this chapter)";
+  }
+
+  renderChapterList();
+}
+
+document.getElementById("prevBtn").addEventListener("click", () => {
+  if (current > 0) loadChapter(current - 1);
+});
+document.getElementById("nextBtn").addEventListener("click", () => {
+  if (current < chapters.length - 1) loadChapter(current + 1);
+});
+
+// auto-advance to next chapter when one ends
+document.getElementById("player").addEventListener("ended", () => {
+  if (current < chapters.length - 1) loadChapter(current + 1);
+});
+
+function parseVTT(text) {
+  const blocks = text.trim().split(/\n\s*\n/).slice(1);
+  return blocks.map(block => {
+    const lines = block.trim().split("\n");
+    const [start, end] = lines[0].split(" --> ").map(toSeconds);
+    const word = lines.slice(1).join(" ");
+    return { start, end, word };
+  });
+}
+
+function toSeconds(ts) {
+  const [h, m, s] = ts.trim().split(":");
+  return (+h) * 3600 + (+m) * 60 + parseFloat(s);
+}
+
+function renderCaption() {
+  document.getElementById("caption").innerHTML = cues
+    .map(c => `<span data-start="${c.start}" data-end="${c.end}">${c.word}</span>`)
+    .join(" ");
+}
+
+document.getElementById("player").addEventListener("timeupdate", () => {
+  const t = document.getElementById("player").currentTime;
+  document.querySelectorAll("#caption span").forEach(span => {
+    const start = parseFloat(span.dataset.start);
+    const end = parseFloat(span.dataset.end);
+    span.classList.toggle("active", t >= start && t <= end);
+  });
+});
+</script>
+
+</body>
+</html>
